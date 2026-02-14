@@ -34,6 +34,45 @@ cd CodexBar.Cli
 dotnet run
 ```
 
+## Creating a Windows `.exe`
+
+Build a standalone Windows executable locally with:
+
+```bash
+dotnet publish CodexBar.Cli/CodexBar.Cli.csproj \
+  -c Release \
+  -r win-x64 \
+  --self-contained true \
+  -p:PublishSingleFile=true \
+  -p:IncludeNativeLibrariesForSelfExtract=true \
+  -p:EnableCompressionInSingleFile=true \
+  -o publish
+```
+
+The generated executable will be at:
+
+- `publish/CodexBar.Cli.exe`
+
+## GitHub Release Workflow
+
+This repository includes a GitHub Actions workflow at `.github/workflows/release-cli.yml` that:
+
+1. Runs on pushes to tags matching `v*` (for example `v0.1.0`) or via manual dispatch.
+2. Restores and publishes the CLI for `win-x64` as a self-contained single file.
+3. Resolves the generated `.exe` automatically from the publish folder (to avoid hardcoded filename issues).
+4. Uploads the `.exe` and a `.zip` bundle as workflow artifacts.
+5. Creates a GitHub Release and attaches those files when the run was triggered by a version tag.
+
+### Triggering a release
+
+```bash
+# Example: create and push a version tag
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+After the workflow completes, download `CodexBar.Cli.exe` from the GitHub Release assets.
+
 ### Windows App (TODO)
 
 The WinUI 3 system tray application is not yet implemented. This is a minimal scaffold with:
