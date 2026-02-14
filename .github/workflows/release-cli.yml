@@ -1,0 +1,59 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore CodexBar.sln
+
+      - name: Publish CLI executable
+        run: >-
+          dotnet publish CodexBar.Cli/CodexBar.Cli.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o publish
+
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          Compress-Archive -Path publish/* -DestinationPath CodexBar.Cli-win-x64.zip -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexBar.Cli-win-x64
+          path: |
+            publish/CodexBar.Cli.exe
+            CodexBar.Cli-win-x64.zip
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            publish/CodexBar.Cli.exe
+            CodexBar.Cli-win-x64.zip
+          generate_release_notes: true
