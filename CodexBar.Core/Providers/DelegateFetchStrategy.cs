@@ -19,7 +19,7 @@ public sealed class DelegateFetchStrategy : IProviderFetchStrategy
         Kind = kind;
         _availability = availability;
         _fetch = fetch;
-        _shouldFallback = shouldFallback ?? static (_, _) => true;
+        _shouldFallback = shouldFallback ?? ((_, _) => true);
     }
 
     public string Id { get; }
