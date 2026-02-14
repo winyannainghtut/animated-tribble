@@ -39,6 +39,12 @@ jobs:
       - name: Package artifact
         shell: pwsh
         run: |
+          $exe = Get-ChildItem -Path publish -Filter *.exe -File | Select-Object -First 1
+          if (-not $exe) {
+            throw "No executable found in publish output."
+          }
+
+
           Compress-Archive -Path publish/* -DestinationPath CodexBar.Cli-win-x64.zip -Force
 
       - name: Upload build artifact
@@ -46,7 +52,7 @@ jobs:
         with:
           name: CodexBar.Cli-win-x64
           path: |
-            publish/CodexBar.Cli.exe
+            publish/*.exe
             CodexBar.Cli-win-x64.zip
 
       - name: Create GitHub release
@@ -54,6 +60,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            publish/CodexBar.Cli.exe
+            publish/*.exe
             CodexBar.Cli-win-x64.zip
           generate_release_notes: true
