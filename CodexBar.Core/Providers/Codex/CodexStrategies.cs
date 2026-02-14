@@ -98,12 +98,15 @@ internal static class CodexStrategies
                     return ProviderFetchResult.Failed(ProviderId.Codex, $"Codex CLI RPC failed: {run.StdErr.Trim()}");
                 }
 
-                if (!TryParseRpcResult(run.StdOut, 2, out var account) || !TryParseRpcResult(run.StdOut, 3, out var limits))
+                if (!TryParseRpcResult(run.StdOut, 2, out var accountDoc) || !TryParseRpcResult(run.StdOut, 3, out var limitsDoc))
                 {
                     return ProviderFetchResult.Failed(ProviderId.Codex, "Unable to parse Codex CLI RPC response.");
                 }
 
-                var usage = CodexParser.ParseRpcPayload(account.Value, limits.Value, context.NowUtc);
+                using var accountResultDoc = accountDoc;
+                using var limitsResultDoc = limitsDoc;
+
+                var usage = CodexParser.ParseRpcPayload(accountResultDoc.RootElement, limitsResultDoc.RootElement, context.NowUtc);
                 if (usage is null)
                 {
                     return ProviderFetchResult.Failed(ProviderId.Codex, "Codex CLI RPC payload missing usage data.");
@@ -149,7 +152,7 @@ internal static class CodexStrategies
     private static string GetAuthPath(ProviderFetchContext context)
         => Path.Combine(context.HomeDirectory, ".codex", "auth.json");
 
-    private static bool TryParseRpcResult(string stdout, int id, out JsonElement? result)
+    private static bool TryParseRpcResult(string stdout, int id, out JsonDocument? resultDoc)
     {
         foreach (var line in stdout.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
         {
@@ -172,7 +175,7 @@ internal static class CodexStrategies
                     continue;
                 }
 
-                result = JsonDocument.Parse(resultElement.GetRawText()).RootElement;
+                resultDoc = JsonDocument.Parse(resultElement.GetRawText());
                 return true;
             }
             catch
@@ -181,7 +184,7 @@ internal static class CodexStrategies
             }
         }
 
-        result = null;
+        resultDoc = null;
         return false;
     }
 }
