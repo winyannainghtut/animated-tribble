@@ -15,13 +15,24 @@ public sealed class BrowserCookieApi : IBrowserCookieApi
             return Array.Empty<BrowserCookie>();
         }
 
+        var normalizedDomains = query.Domains
+            .Select(NormalizeDomain)
+            .Where(static domain => !string.IsNullOrWhiteSpace(domain))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (normalizedDomains.Length == 0)
+        {
+            return Array.Empty<BrowserCookie>();
+        }
+
         var cookies = new List<BrowserCookie>();
 
         if (query.Browser is BrowserKind.Any or BrowserKind.Chrome)
         {
             cookies.AddRange(await ReadChromiumCookiesAsync(
                 userDataRoot: Path.Combine(GetLocalAppData(), "Google", "Chrome", "User Data"),
-                query,
+                normalizedDomains,
                 cancellationToken).ConfigureAwait(false));
         }
 
@@ -29,7 +40,7 @@ public sealed class BrowserCookieApi : IBrowserCookieApi
         {
             cookies.AddRange(await ReadChromiumCookiesAsync(
                 userDataRoot: Path.Combine(GetLocalAppData(), "Microsoft", "Edge", "User Data"),
-                query,
+                normalizedDomains,
                 cancellationToken).ConfigureAwait(false));
         }
 
@@ -37,13 +48,13 @@ public sealed class BrowserCookieApi : IBrowserCookieApi
         {
             cookies.AddRange(await ReadChromiumCookiesAsync(
                 userDataRoot: Path.Combine(GetLocalAppData(), "BraveSoftware", "Brave-Browser", "User Data"),
-                query,
+                normalizedDomains,
                 cancellationToken).ConfigureAwait(false));
         }
 
         if (query.Browser is BrowserKind.Any or BrowserKind.Firefox)
         {
-            cookies.AddRange(await ReadFirefoxCookiesAsync(query, cancellationToken).ConfigureAwait(false));
+            cookies.AddRange(await ReadFirefoxCookiesAsync(normalizedDomains, cancellationToken).ConfigureAwait(false));
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -58,7 +69,7 @@ public sealed class BrowserCookieApi : IBrowserCookieApi
 
     private static async Task<IReadOnlyList<BrowserCookie>> ReadChromiumCookiesAsync(
         string userDataRoot,
-        BrowserCookieQuery query,
+        IReadOnlyList<string> domains,
         CancellationToken cancellationToken)
     {
         if (!Directory.Exists(userDataRoot))
@@ -82,7 +93,7 @@ public sealed class BrowserCookieApi : IBrowserCookieApi
             var tempCopy = CopyToTemporaryLocation(dbFile);
             try
             {
-                result.AddRange(await ReadChromiumCookieDbAsync(tempCopy, query, masterKey, cancellationToken).ConfigureAwait(false));
+                result.AddRange(await ReadChromiumCookieDbAsync(tempCopy, domains, masterKey, cancellationToken).ConfigureAwait(false));
             }
             finally
             {
@@ -95,7 +106,7 @@ public sealed class BrowserCookieApi : IBrowserCookieApi
 
     private static async Task<IReadOnlyList<BrowserCookie>> ReadChromiumCookieDbAsync(
         string dbFile,
-        BrowserCookieQuery query,
+        IReadOnlyList<string> domains,
         byte[]? masterKey,
         CancellationToken cancellationToken)
     {
@@ -104,14 +115,18 @@ public sealed class BrowserCookieApi : IBrowserCookieApi
         await using var connection = new SqliteConnection($"Data Source={dbFile};Mode=ReadOnly");
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        foreach (var domain in query.Domains)
+        foreach (var domain in domains)
         {
             await using var command = connection.CreateCommand();
             command.CommandText = @"
 SELECT host_key, name, path, expires_utc, is_secure, is_httponly, encrypted_value, value
 FROM cookies
-WHERE host_key LIKE $domain";
-            command.Parameters.AddWithValue("$domain", $"%{domain}");
+WHERE host_key = $domain
+   OR host_key = $dotDomain
+   OR host_key LIKE $subdomainPattern";
+            command.Parameters.AddWithValue("$domain", domain);
+            command.Parameters.AddWithValue("$dotDomain", $".{domain}");
+            command.Parameters.AddWithValue("$subdomainPattern", $"%.{domain}");
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -128,8 +143,14 @@ WHERE host_key LIKE $domain";
                     continue;
                 }
 
+                var host = reader.GetString(0);
+                if (!IsHostMatchForDomain(host, domain))
+                {
+                    continue;
+                }
+
                 result.Add(new BrowserCookie(
-                    Domain: reader.GetString(0),
+                    Domain: host,
                     Name: reader.GetString(1),
                     Value: value,
                     Path: reader.IsDBNull(2) ? "/" : reader.GetString(2),
@@ -143,7 +164,7 @@ WHERE host_key LIKE $domain";
         return result;
     }
 
-    private static async Task<IReadOnlyList<BrowserCookie>> ReadFirefoxCookiesAsync(BrowserCookieQuery query, CancellationToken cancellationToken)
+    private static async Task<IReadOnlyList<BrowserCookie>> ReadFirefoxCookiesAsync(IReadOnlyList<string> domains, CancellationToken cancellationToken)
     {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var profilesRoot = Path.Combine(appData, "Mozilla", "Firefox", "Profiles");
@@ -170,14 +191,18 @@ WHERE host_key LIKE $domain";
                 await using var connection = new SqliteConnection($"Data Source={tempCopy};Mode=ReadOnly");
                 await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-                foreach (var domain in query.Domains)
+                foreach (var domain in domains)
                 {
                     await using var command = connection.CreateCommand();
                     command.CommandText = @"
 SELECT host, name, path, expiry, isSecure, isHttpOnly, value
 FROM moz_cookies
-WHERE host LIKE $domain";
-                    command.Parameters.AddWithValue("$domain", $"%{domain}");
+WHERE host = $domain
+   OR host = $dotDomain
+   OR host LIKE $subdomainPattern";
+                    command.Parameters.AddWithValue("$domain", domain);
+                    command.Parameters.AddWithValue("$dotDomain", $".{domain}");
+                    command.Parameters.AddWithValue("$subdomainPattern", $"%.{domain}");
 
                     await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                     while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -189,8 +214,14 @@ WHERE host LIKE $domain";
                             continue;
                         }
 
+                        var host = reader.GetString(0);
+                        if (!IsHostMatchForDomain(host, domain))
+                        {
+                            continue;
+                        }
+
                         result.Add(new BrowserCookie(
-                            Domain: reader.GetString(0),
+                            Domain: host,
                             Name: reader.GetString(1),
                             Value: value,
                             Path: reader.IsDBNull(2) ? "/" : reader.GetString(2),
@@ -251,6 +282,29 @@ WHERE host LIKE $domain";
         {
             return null;
         }
+    }
+
+    private static string? NormalizeDomain(string domain)
+    {
+        if (string.IsNullOrWhiteSpace(domain))
+        {
+            return null;
+        }
+
+        var normalized = domain.Trim().Trim('.').ToLowerInvariant();
+        return normalized.Length == 0 ? null : normalized;
+    }
+
+    private static bool IsHostMatchForDomain(string host, string normalizedDomain)
+    {
+        var normalizedHost = NormalizeDomain(host);
+        if (normalizedHost is null)
+        {
+            return false;
+        }
+
+        return normalizedHost.Equals(normalizedDomain, StringComparison.Ordinal) ||
+               normalizedHost.EndsWith($".{normalizedDomain}", StringComparison.Ordinal);
     }
 
     private static async Task<byte[]?> TryGetChromiumMasterKeyAsync(string userDataRoot, CancellationToken cancellationToken)
